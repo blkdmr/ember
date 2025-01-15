@@ -5,7 +5,6 @@ import json
 import tqdm
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
 import multiprocessing
 from .features import PEFeatureExtractor
 from sklearn.model_selection import GridSearchCV
@@ -162,72 +161,3 @@ def read_metadata(data_dir):
     Read an already created metadata file and return its dataframe
     """
     return pd.read_csv(os.path.join(data_dir, "metadata.csv"), index_col=0)
-
-
-def optimize_model(data_dir):
-    """
-    Run a grid search to find the best LightGBM parameters
-    """
-    # Read data
-    X_train, y_train = read_vectorized_features(data_dir, subset="train")
-
-    # Filter unlabeled data
-    train_rows = (y_train != -1)
-
-    # read training dataset
-    X_train = X_train[train_rows]
-    y_train = y_train[train_rows]
-
-    # score by roc auc
-    # we're interested in low FPR rates, so we'll consider only the AUC for FPRs in [0,5e-3]
-    score = make_scorer(roc_auc_score, max_fpr=5e-3)
-
-    # define search grid
-    param_grid = {
-        'boosting_type': ['gbdt'],
-        'objective': ['binary'],
-        'num_iterations': [500, 1000],
-        'learning_rate': [0.005, 0.05],
-        'num_leaves': [512, 1024, 2048],
-        'feature_fraction': [0.5, 0.8, 1.0],
-        'bagging_fraction': [0.5, 0.8, 1.0]
-    }
-    model = lgb.LGBMClassifier(boosting_type="gbdt", n_jobs=-1, silent=True)
-
-    # each row in X_train appears in chronological order of "appeared"
-    # so this works for progrssive time series splitting
-    progressive_cv = TimeSeriesSplit(n_splits=3).split(X_train)
-
-    grid = GridSearchCV(estimator=model, cv=progressive_cv, param_grid=param_grid, scoring=score, n_jobs=1, verbose=3)
-    grid.fit(X_train, y_train)
-
-    return grid.best_params_
-
-
-def train_model(data_dir, params={}, feature_version=2):
-    """
-    Train the LightGBM model from the EMBER dataset from the vectorized features
-    """
-    # update params
-    params.update({"application": "binary"})
-
-    # Read data
-    X_train, y_train = read_vectorized_features(data_dir, "train", feature_version)
-
-    # Filter unlabeled data
-    train_rows = (y_train != -1)
-
-    # Train
-    lgbm_dataset = lgb.Dataset(X_train[train_rows], y_train[train_rows])
-    lgbm_model = lgb.train(params, lgbm_dataset)
-
-    return lgbm_model
-
-
-def predict_sample(lgbm_model, file_data, feature_version=2):
-    """
-    Predict a PE file with an LightGBM model
-    """
-    extractor = PEFeatureExtractor(feature_version)
-    features = np.array(extractor.feature_vector(file_data), dtype=np.float32)
-    return lgbm_model.predict([features])[0]
